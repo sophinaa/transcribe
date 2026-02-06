@@ -1,0 +1,48 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Arabic (Egyptian) → Transcript + English</title>
+</head>
+<body style="font-family:system-ui;max-width:900px;margin:40px auto;padding:0 16px;">
+  <h2>Upload Arabic (Egyptian) Audio/Video</h2>
+  <input id="f" type="file" accept="audio/*,video/*" />
+  <button id="go">Transcribe + Translate</button>
+  <p id="s"></p>
+
+  <h3>Arabic transcript</h3>
+  <textarea id="ar" style="width:100%;height:200px;"></textarea>
+
+  <h3>English translation</h3>
+  <textarea id="en" style="width:100%;height:200px;"></textarea>
+
+  <script>
+    const f = document.getElementById('f');
+    const s = document.getElementById('s');
+    const ar = document.getElementById('ar');
+    const en = document.getElementById('en');
+
+    document.getElementById('go').onclick = async () => {
+      if (!f.files[0]) return alert("Choose a file first.");
+
+      s.textContent = "Uploading + processing...";
+      ar.value = ""; en.value = "";
+
+      const fd = new FormData();
+      fd.append("file", f.files[0]);
+
+      const res = await fetch("http://127.0.0.1:8000/process", { method:"POST", body: fd });
+      const data = await res.json();
+
+      if (!res.ok) {
+        s.textContent = "Error: " + (data.error || "unknown");
+        return;
+      }
+
+      s.textContent = "Done.";
+      ar.value = data.arabic_transcript || "";
+      en.value = data.english_translation || "";
+    };
+  </script>
+</body>
+</html>
