@@ -9,6 +9,10 @@
   <input id="f" type="file" accept="audio/*,video/*" />
   <button id="go">Transcribe + Translate</button>
   <p id="s"></p>
+  <div id="progressWrap" style="display:none;margin:12px 0 20px 0;">
+    <progress id="p" value="0" max="100" style="width:100%;height:20px;"></progress>
+    <div id="progressMeta" style="margin-top:8px;font-size:14px;line-height:1.5;"></div>
+  </div>
 
   <h3>Arabic transcript</h3>
   <textarea id="ar" style="width:100%;height:200px;"></textarea>
@@ -21,27 +25,83 @@
     const s = document.getElementById('s');
     const ar = document.getElementById('ar');
     const en = document.getElementById('en');
+    const p = document.getElementById('p');
+    const progressWrap = document.getElementById('progressWrap');
+    const progressMeta = document.getElementById('progressMeta');
+
+    const phaseLabel = (phase) => {
+      const map = {
+        queued: "Queued",
+        converting: "Converting audio",
+        transcribing_arabic: "Transcribing Arabic",
+        translating_english: "Translating to English",
+        complete: "Complete",
+        failed: "Failed"
+      };
+      return map[phase] || phase || "Processing";
+    };
+
+    const fmtSeconds = (seconds) => {
+      if (seconds == null) return "—";
+      const n = Math.max(0, Math.round(seconds));
+      const m = Math.floor(n / 60);
+      const s = n % 60;
+      return `${m}:${String(s).padStart(2, "0")}`;
+    };
 
     document.getElementById('go').onclick = async () => {
       if (!f.files[0]) return alert("Choose a file first.");
 
-      s.textContent = "Uploading + processing...";
+      s.textContent = "Uploading...";
       ar.value = ""; en.value = "";
+      p.value = 0;
+      progressMeta.textContent = "";
+      progressWrap.style.display = "block";
 
       const fd = new FormData();
       fd.append("file", f.files[0]);
 
-      const res = await fetch("http://127.0.0.1:8000/process", { method:"POST", body: fd });
-      const data = await res.json();
+      const startRes = await fetch("http://127.0.0.1:8000/process", { method:"POST", body: fd });
+      const startData = await startRes.json();
 
-      if (!res.ok) {
-        s.textContent = "Error: " + (data.error || "unknown");
+      if (!startRes.ok) {
+        s.textContent = "Error: " + (startData.error || "unknown");
         return;
       }
 
-      s.textContent = "Done.";
-      ar.value = data.arabic_transcript || "";
-      en.value = data.english_translation || "";
+      const jobId = startData.job_id;
+      s.textContent = "Processing...";
+
+      while (true) {
+        const progressRes = await fetch(`http://127.0.0.1:8000/progress/${jobId}`);
+        const data = await progressRes.json();
+
+        if (!progressRes.ok) {
+          s.textContent = "Error: " + (data.error || "unknown");
+          break;
+        }
+
+        p.value = data.progress_percent || 0;
+        progressMeta.innerHTML = `
+          <div><strong>${(data.progress_percent || 0).toFixed(1)}%</strong> • ${phaseLabel(data.phase)}</div>
+          <div>Elapsed: ${fmtSeconds(data.elapsed_seconds)} • ETA: ${fmtSeconds(data.eta_seconds)}</div>
+          <div>Audio length: ${fmtSeconds(data.audio_duration_seconds)} • Work: ${fmtSeconds(data.worked_seconds)} / ${fmtSeconds(data.total_work_seconds)}</div>
+        `;
+
+        if (data.status === "done") {
+          s.textContent = "Done.";
+          ar.value = data.arabic_transcript || "";
+          en.value = data.english_translation || "";
+          break;
+        }
+
+        if (data.status === "error") {
+          s.textContent = "Error: " + (data.error || "unknown");
+          break;
+        }
+
+        await new Promise((r) => setTimeout(r, 1000));
+      }
     };
   </script>
 </body>
