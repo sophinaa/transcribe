@@ -2,10 +2,11 @@
 <html>
 <head>
   <meta charset="utf-8" />
-  <title>Arabic (Egyptian) → Transcript + English</title>
+  <title>AI Transcription + Translation</title>
 </head>
 <body style="font-family:system-ui;max-width:900px;margin:40px auto;padding:0 16px;">
-  <h2>Upload Arabic (Egyptian) Audio/Video</h2>
+  <h2>Upload Audio or Video</h2>
+  <p style="margin-top:0;color:#555;">Powered by high-accuracy AI transcription + translation.</p>
   <input id="f" type="file" accept="audio/*,video/*" />
   <button id="go">Transcribe + Translate</button>
   <p id="s"></p>
@@ -14,10 +15,10 @@
     <div id="progressMeta" style="margin-top:8px;font-size:14px;line-height:1.5;"></div>
   </div>
 
-  <h3>Arabic transcript</h3>
+  <h3>Transcript</h3>
   <textarea id="ar" style="width:100%;height:200px;"></textarea>
 
-  <h3>English translation</h3>
+  <h3>Translation (English)</h3>
   <textarea id="en" style="width:100%;height:200px;"></textarea>
 
   <script>
@@ -28,13 +29,18 @@
     const p = document.getElementById('p');
     const progressWrap = document.getElementById('progressWrap');
     const progressMeta = document.getElementById('progressMeta');
+    const runningOnBackend =
+      window.location.protocol.startsWith("http") &&
+      (window.location.hostname === "127.0.0.1" || window.location.hostname === "localhost") &&
+      window.location.port === "8000";
+    const API_BASE = runningOnBackend ? "" : "http://127.0.0.1:8000";
 
     const phaseLabel = (phase) => {
       const map = {
         queued: "Queued",
-        converting: "Converting audio",
-        transcribing_arabic: "Transcribing Arabic",
-        translating_english: "Translating to English",
+        checking_api_key: "Checking API key",
+        transcribing: "Transcribing",
+        translating: "Translating",
         complete: "Complete",
         failed: "Failed"
       };
@@ -53,7 +59,8 @@
       if (!f.files[0]) return alert("Choose a file first.");
 
       s.textContent = "Uploading...";
-      ar.value = ""; en.value = "";
+      ar.value = "";
+      en.value = "";
       p.value = 0;
       progressMeta.textContent = "";
       progressWrap.style.display = "block";
@@ -61,8 +68,15 @@
       const fd = new FormData();
       fd.append("file", f.files[0]);
 
-      const startRes = await fetch("http://127.0.0.1:8000/process", { method:"POST", body: fd });
-      const startData = await startRes.json();
+      let startRes;
+      let startData;
+      try {
+        startRes = await fetch(`${API_BASE}/process`, { method:"POST", body: fd });
+        startData = await startRes.json();
+      } catch (e) {
+        s.textContent = "Error: backend not reachable. Start the API server first.";
+        return;
+      }
 
       if (!startRes.ok) {
         s.textContent = "Error: " + (startData.error || "unknown");
@@ -73,8 +87,15 @@
       s.textContent = "Processing...";
 
       while (true) {
-        const progressRes = await fetch(`http://127.0.0.1:8000/progress/${jobId}`);
-        const data = await progressRes.json();
+        let progressRes;
+        let data;
+        try {
+          progressRes = await fetch(`${API_BASE}/progress/${jobId}`);
+          data = await progressRes.json();
+        } catch (e) {
+          s.textContent = "Error: lost connection to backend.";
+          break;
+        }
 
         if (!progressRes.ok) {
           s.textContent = "Error: " + (data.error || "unknown");
@@ -85,13 +106,12 @@
         progressMeta.innerHTML = `
           <div><strong>${(data.progress_percent || 0).toFixed(1)}%</strong> • ${phaseLabel(data.phase)}</div>
           <div>Elapsed: ${fmtSeconds(data.elapsed_seconds)} • ETA: ${fmtSeconds(data.eta_seconds)}</div>
-          <div>Audio length: ${fmtSeconds(data.audio_duration_seconds)} • Work: ${fmtSeconds(data.worked_seconds)} / ${fmtSeconds(data.total_work_seconds)}</div>
         `;
 
         if (data.status === "done") {
           s.textContent = "Done.";
-          ar.value = data.arabic_transcript || "";
-          en.value = data.english_translation || "";
+          ar.value = data.transcript || data.arabic_transcript || "";
+          en.value = data.translation || data.english_translation || "";
           break;
         }
 
