@@ -2,6 +2,7 @@ import os
 import threading
 import time
 import uuid
+import json
 from pathlib import Path
 
 from fastapi import FastAPI, File, UploadFile
@@ -18,6 +19,13 @@ except Exception as e:  # pragma: no cover - runtime environment guard
     OpenAI = None
     OPENAI_IMPORT_ERROR = e
 
+try:
+    from faster_whisper import WhisperModel
+    WHISPER_IMPORT_ERROR = None
+except Exception as e:  # pragma: no cover - runtime environment guard
+    WhisperModel = None
+    WHISPER_IMPORT_ERROR = e
+
 app = FastAPI()
 app.add_middleware(
     CORSMiddleware,
@@ -32,20 +40,82 @@ SOURCE_LANGUAGE = os.getenv("SOURCE_LANGUAGE", "ar")
 TARGET_LANGUAGE = os.getenv("TARGET_LANGUAGE", "en")
 MAX_UPLOAD_MB = int(os.getenv("MAX_UPLOAD_MB", "100"))
 MAX_UPLOAD_BYTES = MAX_UPLOAD_MB * 1024 * 1024
+LOCAL_WHISPER_MODEL = os.getenv("LOCAL_WHISPER_MODEL", "medium")
+LOCAL_WHISPER_DEVICE = os.getenv("LOCAL_WHISPER_DEVICE", "cpu")
+LOCAL_WHISPER_COMPUTE_TYPE = os.getenv("LOCAL_WHISPER_COMPUTE_TYPE", "int8")
+PREFERRED_PROVIDER = os.getenv("TRANSCRIPTION_PROVIDER", "auto").lower()
+JOB_STORE_DIR = Path(os.getenv("JOB_STORE_DIR", "/tmp/transcription_jobs"))
+APP_STARTED_AT_EPOCH = time.time()
 
 client = None
 client_lock = threading.Lock()
+local_model = None
+local_model_lock = threading.Lock()
 jobs = {}
 jobs_lock = threading.Lock()
+JOB_STORE_DIR.mkdir(parents=True, exist_ok=True)
 
 
-def get_client() -> OpenAI:
+def job_store_path(job_id: str) -> Path:
+    return JOB_STORE_DIR / f"{job_id}.json"
+
+
+def persist_job(job: dict):
+    path = job_store_path(job["job_id"])
+    path.write_text(json.dumps(job, ensure_ascii=False), encoding="utf-8")
+
+
+def load_job(job_id: str) -> dict | None:
+    path = job_store_path(job_id)
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
+def mark_stale_processing_job_as_failed(job: dict) -> dict:
+    if job.get("status") != "processing":
+        return job
+    updated_at = float(job.get("updated_at", 0.0) or 0.0)
+    if updated_at >= APP_STARTED_AT_EPOCH:
+        return job
+    job["status"] = "error"
+    job["phase"] = "failed"
+    job["error"] = "Server restarted during processing. Please re-upload the file."
+    job["updated_at"] = time.time()
+    return job
+
+
+def get_provider() -> str:
+    has_openai = OPENAI_IMPORT_ERROR is None and bool(os.getenv("OPENAI_API_KEY"))
+    has_whisper = WHISPER_IMPORT_ERROR is None
+
+    if PREFERRED_PROVIDER == "openai":
+        if has_openai:
+            return "openai"
+        raise RuntimeError("TRANSCRIPTION_PROVIDER=openai but OpenAI client is unavailable.")
+
+    if PREFERRED_PROVIDER == "local":
+        if has_whisper:
+            return "local"
+        raise RuntimeError("TRANSCRIPTION_PROVIDER=local but faster-whisper is unavailable.")
+
+    if has_openai:
+        return "openai"
+    if has_whisper:
+        return "local"
+    raise RuntimeError(
+        "No transcription backend available. Install openai + set OPENAI_API_KEY or install faster-whisper."
+    )
+
+
+def get_client():
     global client
 
     if OPENAI_IMPORT_ERROR is not None:
-        raise RuntimeError(
-            "Missing Python package 'openai'. Run: .venv/bin/python -m pip install -r requirements.txt"
-        )
+        raise RuntimeError("Missing Python package 'openai'.")
 
     if client is not None:
         return client
@@ -61,7 +131,27 @@ def get_client() -> OpenAI:
         return client
 
 
-def transcribe_audio(path: str) -> str:
+def get_local_model():
+    global local_model
+
+    if WHISPER_IMPORT_ERROR is not None:
+        raise RuntimeError("Missing Python package 'faster-whisper'.")
+
+    if local_model is not None:
+        return local_model
+
+    with local_model_lock:
+        if local_model is not None:
+            return local_model
+        local_model = WhisperModel(
+            LOCAL_WHISPER_MODEL,
+            device=LOCAL_WHISPER_DEVICE,
+            compute_type=LOCAL_WHISPER_COMPUTE_TYPE,
+        )
+        return local_model
+
+
+def transcribe_audio_openai(path: str) -> str:
     local_client = get_client()
     with open(path, "rb") as audio_file:
         result = local_client.audio.transcriptions.create(
@@ -76,7 +166,7 @@ def transcribe_audio(path: str) -> str:
     return str(result).strip()
 
 
-def translate_text(text: str) -> str:
+def translate_text_openai(text: str) -> str:
     if not text:
         return ""
     if SOURCE_LANGUAGE == TARGET_LANGUAGE:
@@ -106,12 +196,54 @@ def translate_text(text: str) -> str:
     return output_text.strip() if output_text else ""
 
 
+def transcribe_audio_local(path: str, job_id: str | None = None) -> str:
+    model = get_local_model()
+    segments, info = model.transcribe(path, task="transcribe", language=SOURCE_LANGUAGE, vad_filter=True)
+    duration = float(getattr(info, "duration", 0.0) or 0.0)
+    text_parts = []
+
+    for seg in segments:
+        text_parts.append(seg.text)
+        if job_id and duration > 0:
+            seg_end = float(getattr(seg, "end", 0.0) or 0.0)
+            fraction = max(0.0, min(1.0, seg_end / duration))
+            # Keep transcription phase between 10% and 70%.
+            progress = 10.0 + (fraction * 60.0)
+            update_job_progress(job_id, worked_seconds=progress, total_work_seconds=100.0)
+
+    return "".join(text_parts).strip()
+
+
+def translate_text_local(path: str, fallback_text: str, job_id: str | None = None) -> str:
+    if SOURCE_LANGUAGE == TARGET_LANGUAGE:
+        return fallback_text
+    if TARGET_LANGUAGE != "en":
+        return fallback_text
+    model = get_local_model()
+    segments, info = model.transcribe(path, task="translate", language=SOURCE_LANGUAGE, vad_filter=True)
+    duration = float(getattr(info, "duration", 0.0) or 0.0)
+    text_parts = []
+
+    for seg in segments:
+        text_parts.append(seg.text)
+        if job_id and duration > 0:
+            seg_end = float(getattr(seg, "end", 0.0) or 0.0)
+            fraction = max(0.0, min(1.0, seg_end / duration))
+            # Keep translation phase between 70% and 98%.
+            progress = 70.0 + (fraction * 28.0)
+            update_job_progress(job_id, worked_seconds=progress, total_work_seconds=100.0)
+
+    return "".join(text_parts).strip()
+
+
 def update_job(job_id: str, **fields):
     with jobs_lock:
         job = jobs.get(job_id)
         if not job:
             return
         job.update(fields)
+        job["updated_at"] = time.time()
+        persist_job(job)
 
 
 def update_job_progress(job_id: str, worked_seconds: float, total_work_seconds: float):
@@ -129,20 +261,32 @@ def update_job_progress(job_id: str, worked_seconds: float, total_work_seconds: 
         job["eta_seconds"] = None if eta is None else round(eta, 2)
         job["worked_seconds"] = round(worked_seconds, 2)
         job["total_work_seconds"] = round(total_work_seconds, 2)
+        job["updated_at"] = time.time()
+        persist_job(job)
 
 
 def process_job(job_id: str, audio_path: str):
     try:
-        update_job(job_id, status="processing", phase="checking_api_key")
-        get_client()
-        update_job_progress(job_id, worked_seconds=5.0, total_work_seconds=100.0)
+        provider = get_provider()
+        update_job(job_id, status="processing", phase=f"initializing_{provider}", provider=provider)
+        if provider == "openai":
+            get_client()
+        else:
+            get_local_model()
+        update_job_progress(job_id, worked_seconds=10.0, total_work_seconds=100.0)
 
         update_job(job_id, phase="transcribing")
-        transcript_text = transcribe_audio(audio_path)
+        if provider == "openai":
+            transcript_text = transcribe_audio_openai(audio_path)
+        else:
+            transcript_text = transcribe_audio_local(audio_path, job_id=job_id)
         update_job_progress(job_id, worked_seconds=70.0, total_work_seconds=100.0)
 
         update_job(job_id, phase="translating")
-        translation_text = translate_text(transcript_text)
+        if provider == "openai":
+            translation_text = translate_text_openai(transcript_text)
+        else:
+            translation_text = translate_text_local(audio_path, transcript_text, job_id=job_id)
         update_job_progress(job_id, worked_seconds=100.0, total_work_seconds=100.0)
 
         update_job(
@@ -186,7 +330,7 @@ async def process_audio(file: UploadFile = File(...)):
         out.write(content)
 
     with jobs_lock:
-        jobs[job_id] = {
+        new_job = {
             "job_id": job_id,
             "status": "queued",
             "phase": "queued",
@@ -203,8 +347,12 @@ async def process_audio(file: UploadFile = File(...)):
             "error": None,
             "model_name": TRANSCRIBE_MODEL,
             "translation_model": TRANSLATE_MODEL,
+            "provider": None,
             "started_at": time.monotonic(),
+            "updated_at": time.time(),
         }
+        jobs[job_id] = new_job
+        persist_job(new_job)
 
     worker = threading.Thread(target=process_job, args=(job_id, raw_path), daemon=True)
     worker.start()
@@ -224,15 +372,49 @@ def get_progress(job_id: str):
     with jobs_lock:
         job = jobs.get(job_id)
         if not job:
+            loaded = load_job(job_id)
+            if loaded:
+                jobs[job_id] = loaded
+                job = loaded
+        if not job:
             return JSONResponse({"error": "job not found"}, status_code=404)
+        job = mark_stale_processing_job_as_failed(job)
+        jobs[job_id] = job
+        persist_job(job)
+
+        now = time.time()
+        runtime_elapsed = round(max(0.0, time.monotonic() - job["started_at"]), 2)
+        progress_percent = float(job.get("progress_percent", 0.0) or 0.0)
+        eta_seconds = job.get("eta_seconds")
+
+        # Heartbeat progress for long local decode gaps so UI does not appear frozen.
+        if job.get("status") == "processing":
+            phase = job.get("phase")
+            phase_caps = {
+                "initializing_openai": 15.0,
+                "initializing_local": 15.0,
+                "transcribing": 69.5,
+                "translating": 98.5,
+            }
+            cap = phase_caps.get(phase)
+            if cap is not None:
+                updated_at = float(job.get("updated_at", now) or now)
+                idle_seconds = max(0.0, now - updated_at)
+                if idle_seconds > 2.0 and progress_percent < cap:
+                    progress_percent = min(cap, progress_percent + ((idle_seconds - 2.0) * 0.08))
+
+            if progress_percent > 0:
+                eta_seconds = round(max(0.0, runtime_elapsed * ((100.0 - progress_percent) / progress_percent)), 2)
+            else:
+                eta_seconds = None
 
         payload = {
             "job_id": job["job_id"],
             "status": job["status"],
             "phase": job["phase"],
-            "progress_percent": job["progress_percent"],
-            "elapsed_seconds": job["elapsed_seconds"],
-            "eta_seconds": job["eta_seconds"],
+            "progress_percent": round(progress_percent, 2),
+            "elapsed_seconds": runtime_elapsed,
+            "eta_seconds": eta_seconds,
             "worked_seconds": job["worked_seconds"],
             "total_work_seconds": job["total_work_seconds"],
             "audio_duration_seconds": job["audio_duration_seconds"],
@@ -243,5 +425,6 @@ def get_progress(job_id: str):
             "error": job["error"],
             "model_name": job["model_name"],
             "translation_model": job["translation_model"],
+            "provider": job["provider"],
         }
     return JSONResponse(payload)

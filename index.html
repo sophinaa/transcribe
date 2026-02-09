@@ -39,6 +39,8 @@
       const map = {
         queued: "Queued",
         checking_api_key: "Checking API key",
+        initializing_openai: "Initializing OpenAI",
+        initializing_local: "Initializing local model",
         transcribing: "Transcribing",
         translating: "Translating",
         complete: "Complete",
@@ -55,6 +57,37 @@
       return `${m}:${String(s).padStart(2, "0")}`;
     };
 
+    const startJobWithUploadProgress = (formData) => {
+      return new Promise((resolve, reject) => {
+        const xhr = new XMLHttpRequest();
+        xhr.open("POST", `${API_BASE}/process`);
+
+        xhr.upload.onprogress = (evt) => {
+          if (!evt.lengthComputable) return;
+          const uploadPercent = (evt.loaded / evt.total) * 100;
+          const shownPercent = Math.min(10, uploadPercent * 0.1);
+          p.value = shownPercent;
+          progressMeta.innerHTML = `
+            <div><strong>${uploadPercent.toFixed(1)}%</strong> • Uploading</div>
+            <div>Sent: ${(evt.loaded / (1024 * 1024)).toFixed(2)} MB / ${(evt.total / (1024 * 1024)).toFixed(2)} MB</div>
+          `;
+        };
+
+        xhr.onload = () => {
+          let data = {};
+          try {
+            data = xhr.responseText ? JSON.parse(xhr.responseText) : {};
+          } catch {
+            data = { error: "Invalid JSON response from backend." };
+          }
+          resolve({ ok: xhr.status >= 200 && xhr.status < 300, status: xhr.status, data });
+        };
+
+        xhr.onerror = () => reject(new Error("Network error during upload."));
+        xhr.send(formData);
+      });
+    };
+
     document.getElementById('go').onclick = async () => {
       if (!f.files[0]) return alert("Choose a file first.");
 
@@ -68,17 +101,18 @@
       const fd = new FormData();
       fd.append("file", f.files[0]);
 
-      let startRes;
       let startData;
+      let startOk;
       try {
-        startRes = await fetch(`${API_BASE}/process`, { method:"POST", body: fd });
-        startData = await startRes.json();
+        const startResult = await startJobWithUploadProgress(fd);
+        startData = startResult.data;
+        startOk = startResult.ok;
       } catch (e) {
         s.textContent = "Error: backend not reachable. Start the API server first.";
         return;
       }
 
-      if (!startRes.ok) {
+      if (!startOk) {
         s.textContent = "Error: " + (startData.error || "unknown");
         return;
       }
@@ -102,7 +136,7 @@
           break;
         }
 
-        p.value = data.progress_percent || 0;
+        p.value = 10 + ((data.progress_percent || 0) * 0.9);
         progressMeta.innerHTML = `
           <div><strong>${(data.progress_percent || 0).toFixed(1)}%</strong> • ${phaseLabel(data.phase)}</div>
           <div>Elapsed: ${fmtSeconds(data.elapsed_seconds)} • ETA: ${fmtSeconds(data.eta_seconds)}</div>
