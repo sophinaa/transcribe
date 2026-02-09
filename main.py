@@ -252,6 +252,8 @@ def update_job_progress(job_id: str, worked_seconds: float, total_work_seconds: 
         if not job:
             return
         progress = max(0.0, min(100.0, (worked_seconds / total_work_seconds) * 100.0))
+        # Never let progress move backwards.
+        progress = max(float(job.get("progress_percent", 0.0) or 0.0), progress)
         elapsed = max(0.0, time.monotonic() - job["started_at"])
         eta = None
         if progress > 0:
@@ -402,6 +404,9 @@ def get_progress(job_id: str):
                 idle_seconds = max(0.0, now - updated_at)
                 if idle_seconds > 2.0 and progress_percent < cap:
                     progress_percent = min(cap, progress_percent + ((idle_seconds - 2.0) * 0.08))
+
+            # Ensure response progress is never lower than stored progress.
+            progress_percent = max(float(job.get("progress_percent", 0.0) or 0.0), progress_percent)
 
             if progress_percent > 0:
                 eta_seconds = round(max(0.0, runtime_elapsed * ((100.0 - progress_percent) / progress_percent)), 2)
