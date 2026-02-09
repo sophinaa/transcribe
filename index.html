@@ -30,6 +30,7 @@
     const progressWrap = document.getElementById('progressWrap');
     const progressMeta = document.getElementById('progressMeta');
     let lastShownProgress = 0;
+    let lastShownBackendPercent = 0;
     const runningOnBackend =
       window.location.protocol.startsWith("http") &&
       (window.location.hostname === "127.0.0.1" || window.location.hostname === "localhost") &&
@@ -97,6 +98,7 @@
       en.value = "";
       p.value = 0;
       lastShownProgress = 0;
+      lastShownBackendPercent = 0;
       progressMeta.textContent = "";
       progressWrap.style.display = "block";
 
@@ -138,11 +140,13 @@
           break;
         }
 
-        const rawProgress = 10 + ((data.progress_percent || 0) * 0.9);
+        const rawBackendPercent = data.progress_percent || 0;
+        lastShownBackendPercent = Math.max(lastShownBackendPercent, rawBackendPercent);
+        const rawProgress = 10 + (lastShownBackendPercent * 0.9);
         lastShownProgress = Math.max(lastShownProgress, rawProgress);
         p.value = lastShownProgress;
         progressMeta.innerHTML = `
-          <div><strong>${(data.progress_percent || 0).toFixed(1)}%</strong> • ${phaseLabel(data.phase)}</div>
+          <div><strong>${lastShownBackendPercent.toFixed(1)}%</strong> • ${phaseLabel(data.phase)}</div>
           <div>Elapsed: ${fmtSeconds(data.elapsed_seconds)} • ETA: ${fmtSeconds(data.eta_seconds)}</div>
         `;
 
