@@ -36,6 +36,7 @@ app.add_middleware(
 
 TRANSCRIBE_MODEL = os.getenv("OPENAI_TRANSCRIBE_MODEL", "gpt-4o-transcribe")
 TRANSLATE_MODEL = os.getenv("OPENAI_TRANSLATE_MODEL", "gpt-4.1-mini")
+ROLE_LABEL_MODEL = os.getenv("OPENAI_ROLE_LABEL_MODEL", "gpt-4.1-mini")
 SOURCE_LANGUAGE = os.getenv("SOURCE_LANGUAGE", "ar")
 TARGET_LANGUAGE = os.getenv("TARGET_LANGUAGE", "en")
 MAX_UPLOAD_MB = int(os.getenv("MAX_UPLOAD_MB", "100"))
@@ -196,6 +197,36 @@ def translate_text_openai(text: str) -> str:
     return output_text.strip() if output_text else ""
 
 
+def apply_speaker_labels_openai(text: str, language_name: str) -> str:
+    if not text.strip():
+        return text
+
+    local_client = get_client()
+    response = local_client.responses.create(
+        model=ROLE_LABEL_MODEL,
+        input=[
+            {
+                "role": "system",
+                "content": (
+                    "Format the transcript with speaker labels only. "
+                    "Use exactly these prefixes: "
+                    "'Speaker 1 (Interviewer):' and 'Speaker 2 (Interviewee):'. "
+                    "Keep wording and language unchanged. "
+                    "Do not summarize. Do not add commentary."
+                ),
+            },
+            {
+                "role": "user",
+                "content": (
+                    f"Label this {language_name} transcript with speaker turns:\n\n{text}"
+                ),
+            },
+        ],
+    )
+    output_text = getattr(response, "output_text", "")
+    return output_text.strip() if output_text else text
+
+
 def transcribe_audio_local(path: str, job_id: str | None = None) -> str:
     model = get_local_model()
     segments, info = model.transcribe(path, task="transcribe", language=SOURCE_LANGUAGE, vad_filter=True)
@@ -289,6 +320,16 @@ def process_job(job_id: str, audio_path: str):
             translation_text = translate_text_openai(transcript_text)
         else:
             translation_text = translate_text_local(audio_path, transcript_text, job_id=job_id)
+        update_job_progress(job_id, worked_seconds=88.0, total_work_seconds=100.0)
+
+        update_job(job_id, phase="labeling_speakers")
+        try:
+            if OPENAI_IMPORT_ERROR is None and bool(os.getenv("OPENAI_API_KEY")):
+                transcript_text = apply_speaker_labels_openai(transcript_text, SOURCE_LANGUAGE)
+                translation_text = apply_speaker_labels_openai(translation_text, TARGET_LANGUAGE)
+        except Exception:
+            # Keep original text if speaker labeling fails.
+            pass
         update_job_progress(job_id, worked_seconds=100.0, total_work_seconds=100.0)
 
         update_job(
@@ -396,7 +437,8 @@ def get_progress(job_id: str):
                 "initializing_openai": 15.0,
                 "initializing_local": 15.0,
                 "transcribing": 69.5,
-                "translating": 98.5,
+                "translating": 87.5,
+                "labeling_speakers": 98.5,
             }
             cap = phase_caps.get(phase)
             if cap is not None:
