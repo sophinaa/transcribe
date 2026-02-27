@@ -3,19 +3,19 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>AI Transcription + Translation</title>
+  <title>Transcription + Translation</title>
   <style>
     :root {
-      --bg: #f3f7fb;
-      --surface: #ffffff;
-      --text: #12263a;
-      --muted: #4f6476;
-      --border: #d6e2ee;
-      --brand: #0d6efd;
-      --brand-dark: #0b5ed7;
+      --bg: #fff2f7;
+      --surface: #fff9fc;
+      --text: #4a1f35;
+      --muted: #8d5b74;
+      --border: #f2cfe0;
+      --brand: #f58cb8;
+      --brand-dark: #e26ea1;
       --ok: #198754;
       --error: #dc3545;
-      --shadow: 0 10px 30px rgba(17, 36, 58, 0.08);
+      --shadow: 0 10px 30px rgba(132, 52, 96, 0.12);
     }
 
     * { box-sizing: border-box; }
@@ -24,8 +24,8 @@
       margin: 0;
       font-family: "Segoe UI", "Avenir Next", "Helvetica Neue", sans-serif;
       background:
-        radial-gradient(circle at top right, #dbeafe 0%, transparent 45%),
-        radial-gradient(circle at top left, #e0f2fe 0%, transparent 40%),
+        radial-gradient(circle at top right, #ffd9ea 0%, transparent 45%),
+        radial-gradient(circle at top left, #ffe4f0 0%, transparent 40%),
         var(--bg);
       color: var(--text);
       min-height: 100vh;
@@ -74,17 +74,17 @@
 
     input[type="file"] {
       width: 100%;
-      border: 1px dashed #95b8d6;
+      border: 1px dashed #e7a9c8;
       border-radius: 12px;
       padding: 10px;
-      background: #f8fbff;
+      background: #fff4f9;
       color: var(--muted);
     }
 
     button {
       border: 0;
       border-radius: 12px;
-      background: linear-gradient(135deg, var(--brand), #2f80ed);
+      background: linear-gradient(135deg, var(--brand), #f4a8c8);
       color: white;
       font-weight: 600;
       padding: 10px 16px;
@@ -115,9 +115,9 @@
       font-size: 0.85rem;
       font-weight: 600;
       padding: 6px 10px;
-      background: #e7f1ff;
-      color: #0b4ea2;
-      border: 1px solid #cfe2ff;
+      background: #ffe7f2;
+      color: #9a3f69;
+      border: 1px solid #f7c6dd;
     }
 
     .status[data-state="done"] {
@@ -142,12 +142,12 @@
     }
 
     progress::-webkit-progress-bar {
-      background: #edf3f9;
+      background: #fdebf3;
       border-radius: 999px;
     }
 
     progress::-webkit-progress-value {
-      background: linear-gradient(90deg, #0d6efd, #20c997);
+      background: linear-gradient(90deg, #f58cb8, #f4a8c8);
       border-radius: 999px;
     }
 
@@ -184,7 +184,7 @@
     textarea:focus,
     input[type="file"]:focus,
     button:focus {
-      outline: 2px solid #7fb3ff;
+      outline: 2px solid #f3a8c8;
       outline-offset: 1px;
     }
 
@@ -202,8 +202,7 @@
 <body>
   <main class="app">
     <section class="card">
-      <h1>AI Transcription + Translation</h1>
-      <p class="subtitle">Upload audio/video and get transcript + English translation with speaker labels.</p>
+      <h1>Transcription + Translation</h1>
     </section>
 
     <section class="card controls">
