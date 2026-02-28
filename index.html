@@ -239,15 +239,52 @@
     const progressMeta = document.getElementById('progressMeta');
     let lastShownProgress = 0;
     let lastShownBackendPercent = 0;
+    const STORAGE_KEY = "transcription_ui_state_v1";
     const runningOnBackend =
       window.location.protocol.startsWith("http") &&
       (window.location.hostname === "127.0.0.1" || window.location.hostname === "localhost") &&
       window.location.port === "8000";
     const API_BASE = runningOnBackend ? "" : "http://127.0.0.1:8000";
 
+    const saveUiState = () => {
+      try {
+        localStorage.setItem(
+          STORAGE_KEY,
+          JSON.stringify({
+            transcript: ar.value || "",
+            translation: en.value || "",
+            statusText: s.textContent || "Ready",
+            statusState: s.dataset.state || "idle",
+            progressValue: Number(p.value) || 0,
+            progressMetaHtml: progressMeta.innerHTML || "",
+            progressVisible: progressWrap.style.display === "block"
+          })
+        );
+      } catch {
+        // Ignore storage failures (private mode / blocked storage).
+      }
+    };
+
+    const restoreUiState = () => {
+      try {
+        const raw = localStorage.getItem(STORAGE_KEY);
+        if (!raw) return;
+        const state = JSON.parse(raw);
+        ar.value = state.transcript || "";
+        en.value = state.translation || "";
+        setStatus(state.statusText || "Ready", state.statusState || "idle");
+        p.value = Number(state.progressValue) || 0;
+        progressMeta.innerHTML = state.progressMetaHtml || "";
+        progressWrap.style.display = state.progressVisible ? "block" : "none";
+      } catch {
+        // Ignore invalid storage payloads.
+      }
+    };
+
     const setStatus = (text, state) => {
       s.textContent = text;
       s.dataset.state = state;
+      saveUiState();
     };
 
     const phaseLabel = (phase) => {
@@ -287,6 +324,7 @@
             <div><strong>${uploadPercent.toFixed(1)}%</strong> • Uploading</div>
             <div>Sent: ${(evt.loaded / (1024 * 1024)).toFixed(2)} MB / ${(evt.total / (1024 * 1024)).toFixed(2)} MB</div>
           `;
+          saveUiState();
         };
 
         xhr.onload = () => {
@@ -315,6 +353,7 @@
       lastShownBackendPercent = 0;
       progressMeta.textContent = "";
       progressWrap.style.display = "block";
+      saveUiState();
 
       const fd = new FormData();
       fd.append("file", f.files[0]);
@@ -363,11 +402,13 @@
           <div><strong>${lastShownBackendPercent.toFixed(1)}%</strong> • ${phaseLabel(data.phase)}</div>
           <div>Elapsed: ${fmtSeconds(data.elapsed_seconds)} • ETA: ${fmtSeconds(data.eta_seconds)}</div>
         `;
+        saveUiState();
 
         if (data.status === "done") {
           setStatus("Done", "done");
           ar.value = data.transcript || data.arabic_transcript || "";
           en.value = data.translation || data.english_translation || "";
+          saveUiState();
           break;
         }
 
@@ -379,6 +420,11 @@
         await new Promise((r) => setTimeout(r, 1000));
       }
     };
+
+    ar.addEventListener("input", saveUiState);
+    en.addEventListener("input", saveUiState);
+    window.addEventListener("beforeunload", saveUiState);
+    restoreUiState();
   </script>
 </body>
 </html>
