@@ -47,6 +47,7 @@ LOCAL_WHISPER_COMPUTE_TYPE = os.getenv("LOCAL_WHISPER_COMPUTE_TYPE", "int8")
 PREFERRED_PROVIDER = os.getenv("TRANSCRIPTION_PROVIDER", "auto").lower()
 JOB_STORE_DIR = Path(os.getenv("JOB_STORE_DIR", "/tmp/transcription_jobs"))
 APP_STARTED_AT_EPOCH = time.time()
+DELETE_TEMP_UPLOADS = os.getenv("DELETE_TEMP_UPLOADS", "0").strip().lower() in {"1", "true", "yes", "on"}
 
 client = None
 client_lock = threading.Lock()
@@ -351,10 +352,11 @@ def process_job(job_id: str, audio_path: str):
     except Exception as e:
         update_job(job_id, status="error", phase="failed", error=str(e))
     finally:
-        try:
-            os.remove(audio_path)
-        except OSError:
-            pass
+        if DELETE_TEMP_UPLOADS:
+            try:
+                os.remove(audio_path)
+            except OSError:
+                pass
 
 
 @app.post("/process")
