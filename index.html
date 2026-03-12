@@ -237,6 +237,7 @@
     const p = document.getElementById('p');
     const progressWrap = document.getElementById('progressWrap');
     const progressMeta = document.getElementById('progressMeta');
+    let currentJobId = null;
     let lastShownProgress = 0;
     let lastShownBackendPercent = 0;
     const STORAGE_KEY = "transcription_ui_state_v1";
@@ -253,6 +254,7 @@
           JSON.stringify({
             transcript: ar.value || "",
             translation: en.value || "",
+            jobId: currentJobId,
             statusText: s.textContent || "Ready",
             statusState: s.dataset.state || "idle",
             progressValue: Number(p.value) || 0,
@@ -265,15 +267,68 @@
       }
     };
 
-    const restoreUiState = () => {
+    const resetUi = () => {
+      currentJobId = null;
+      ar.value = "";
+      en.value = "";
+      p.value = 0;
+      lastShownProgress = 0;
+      lastShownBackendPercent = 0;
+      progressMeta.textContent = "";
+      progressWrap.style.display = "none";
+      setStatus("Ready", "idle");
+    };
+
+    const restoreUiState = async () => {
       try {
         const raw = localStorage.getItem(STORAGE_KEY);
         if (!raw) return;
         const state = JSON.parse(raw);
+        currentJobId = state.jobId || null;
+
+        if ((state.statusState === "idle" || state.statusState === "error") && !currentJobId) {
+          resetUi();
+          return;
+        }
+
+        if (currentJobId) {
+          try {
+            const res = await fetch(`${API_BASE}/progress/${currentJobId}`);
+            const data = await res.json();
+            if (!res.ok || data.status === "error") {
+              resetUi();
+              return;
+            }
+
+            ar.value = data.transcript || data.arabic_transcript || "";
+            en.value = data.translation || data.english_translation || "";
+            lastShownBackendPercent = Number(data.progress_percent) || 0;
+            lastShownProgress = Math.max(0, 10 + (lastShownBackendPercent * 0.9));
+            p.value = lastShownProgress;
+            progressMeta.innerHTML = `
+              <div><strong>${lastShownBackendPercent.toFixed(1)}%</strong> • ${phaseLabel(data.phase)}</div>
+              <div>Elapsed: ${fmtSeconds(data.elapsed_seconds)} • ETA: ${fmtSeconds(data.eta_seconds)}</div>
+            `;
+            progressWrap.style.display = data.status === "done" ? "block" : "block";
+            setStatus(data.status === "done" ? "Done" : "Processing...", data.status === "done" ? "done" : "idle");
+            saveUiState();
+            return;
+          } catch {
+            resetUi();
+            return;
+          }
+        }
+
+        if (state.statusState !== "done") {
+          resetUi();
+          return;
+        }
+
         ar.value = state.transcript || "";
         en.value = state.translation || "";
         setStatus(state.statusText || "Ready", state.statusState || "idle");
         p.value = Number(state.progressValue) || 0;
+        lastShownProgress = Number(state.progressValue) || 0;
         progressMeta.innerHTML = state.progressMetaHtml || "";
         progressWrap.style.display = state.progressVisible ? "block" : "none";
       } catch {
@@ -375,6 +430,7 @@
       }
 
       const jobId = startData.job_id;
+      currentJobId = jobId;
       setStatus("Processing...", "idle");
 
       while (true) {
@@ -405,6 +461,7 @@
         saveUiState();
 
         if (data.status === "done") {
+          currentJobId = null;
           setStatus("Done", "done");
           ar.value = data.transcript || data.arabic_transcript || "";
           en.value = data.translation || data.english_translation || "";
@@ -413,6 +470,7 @@
         }
 
         if (data.status === "error") {
+          currentJobId = null;
           setStatus("Error: " + (data.error || "unknown"), "error");
           break;
         }

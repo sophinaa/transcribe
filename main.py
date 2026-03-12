@@ -198,6 +198,75 @@ def translate_text_openai(text: str) -> str:
     return output_text.strip() if output_text else ""
 
 
+def chunk_text(text: str, max_chars: int = 3500) -> list[str]:
+    stripped = text.strip()
+    if not stripped:
+        return []
+
+    paragraphs = [part.strip() for part in stripped.split("\n") if part.strip()]
+    if not paragraphs:
+        paragraphs = [stripped]
+
+    chunks = []
+    current = ""
+
+    for paragraph in paragraphs:
+        candidate = paragraph if not current else f"{current}\n\n{paragraph}"
+        if len(candidate) <= max_chars:
+            current = candidate
+            continue
+
+        if current:
+            chunks.append(current)
+            current = ""
+
+        if len(paragraph) <= max_chars:
+            current = paragraph
+            continue
+
+        sentences = [part.strip() for part in paragraph.replace(". ", ".\n").splitlines() if part.strip()]
+        sentence_chunk = ""
+        for sentence in sentences:
+            sentence_candidate = sentence if not sentence_chunk else f"{sentence_chunk} {sentence}"
+            if len(sentence_candidate) <= max_chars:
+                sentence_chunk = sentence_candidate
+            else:
+                if sentence_chunk:
+                    chunks.append(sentence_chunk)
+                sentence_chunk = sentence
+        if sentence_chunk:
+            current = sentence_chunk
+
+    if current:
+        chunks.append(current)
+
+    return chunks
+
+
+def translate_text_openai_with_progress(text: str, job_id: str | None = None) -> str:
+    if not text:
+        return ""
+    if SOURCE_LANGUAGE == TARGET_LANGUAGE:
+        return text
+
+    chunks = chunk_text(text)
+    if not chunks:
+        return ""
+
+    translated_chunks = []
+    total_chunks = len(chunks)
+
+    for index, chunk in enumerate(chunks, start=1):
+        translated_chunks.append(translate_text_openai(chunk))
+        if job_id:
+            fraction = index / total_chunks
+            # Keep translation phase between 70% and 88%.
+            progress = 70.0 + (fraction * 18.0)
+            update_job_progress(job_id, worked_seconds=progress, total_work_seconds=100.0)
+
+    return "\n\n".join(part for part in translated_chunks if part.strip()).strip()
+
+
 def apply_speaker_labels_openai(text: str, language_name: str) -> str:
     if not text.strip():
         return text
@@ -318,7 +387,7 @@ def process_job(job_id: str, audio_path: str):
 
         update_job(job_id, phase="translating")
         if provider == "openai":
-            translation_text = translate_text_openai(transcript_text)
+            translation_text = translate_text_openai_with_progress(transcript_text, job_id=job_id)
         else:
             translation_text = translate_text_local(audio_path, transcript_text, job_id=job_id)
         update_job_progress(job_id, worked_seconds=88.0, total_work_seconds=100.0)
