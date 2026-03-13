@@ -39,6 +39,7 @@ TRANSLATE_MODEL = os.getenv("OPENAI_TRANSLATE_MODEL", "gpt-4.1-mini")
 ROLE_LABEL_MODEL = os.getenv("OPENAI_ROLE_LABEL_MODEL", "gpt-4.1-mini")
 SOURCE_LANGUAGE = os.getenv("SOURCE_LANGUAGE", "ar")
 TARGET_LANGUAGE = os.getenv("TARGET_LANGUAGE", "en")
+ENABLE_SPEAKER_LABELS = os.getenv("ENABLE_SPEAKER_LABELS", "0").strip().lower() in {"1", "true", "yes", "on"}
 MAX_UPLOAD_MB = int(os.getenv("MAX_UPLOAD_MB", "100"))
 MAX_UPLOAD_BYTES = MAX_UPLOAD_MB * 1024 * 1024
 LOCAL_WHISPER_MODEL = os.getenv("LOCAL_WHISPER_MODEL", "medium")
@@ -416,16 +417,19 @@ def process_job(job_id: str, audio_path: str):
         )
         update_job_progress(job_id, worked_seconds=88.0, total_work_seconds=100.0)
 
-        update_job(job_id, phase="labeling_speakers")
-        try:
-            if OPENAI_IMPORT_ERROR is None and bool(os.getenv("OPENAI_API_KEY")):
-                labeled_transcript = apply_speaker_labels_openai(transcript_text, SOURCE_LANGUAGE)
-                labeled_translation = apply_speaker_labels_openai(translation_text, TARGET_LANGUAGE)
-                transcript_text = prefer_original_if_truncated(transcript_text, labeled_transcript)
-                translation_text = prefer_original_if_truncated(translation_text, labeled_translation)
-        except Exception:
-            # Keep original text if speaker labeling fails.
-            pass
+        if ENABLE_SPEAKER_LABELS:
+            update_job(job_id, phase="labeling_speakers")
+            try:
+                if OPENAI_IMPORT_ERROR is None and bool(os.getenv("OPENAI_API_KEY")):
+                    labeled_transcript = apply_speaker_labels_openai(transcript_text, SOURCE_LANGUAGE)
+                    labeled_translation = apply_speaker_labels_openai(translation_text, TARGET_LANGUAGE)
+                    transcript_text = prefer_original_if_truncated(transcript_text, labeled_transcript)
+                    translation_text = prefer_original_if_truncated(translation_text, labeled_translation)
+            except Exception:
+                # Keep original text if speaker labeling fails.
+                pass
+        else:
+            update_job(job_id, phase="finalizing")
         update_job_progress(job_id, worked_seconds=100.0, total_work_seconds=100.0)
 
         update_job(
