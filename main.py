@@ -297,6 +297,20 @@ def apply_speaker_labels_openai(text: str, language_name: str) -> str:
     return output_text.strip() if output_text else text
 
 
+def prefer_original_if_truncated(original_text: str, candidate_text: str, minimum_ratio: float = 0.8) -> str:
+    original = (original_text or "").strip()
+    candidate = (candidate_text or "").strip()
+
+    if not original:
+        return candidate
+    if not candidate:
+        return original
+
+    if len(candidate) < (len(original) * minimum_ratio):
+        return original
+    return candidate
+
+
 def transcribe_audio_local(path: str, job_id: str | None = None) -> str:
     model = get_local_model()
     segments, info = model.transcribe(path, task="transcribe", language=SOURCE_LANGUAGE, vad_filter=True)
@@ -383,6 +397,11 @@ def process_job(job_id: str, audio_path: str):
             transcript_text = transcribe_audio_openai(audio_path)
         else:
             transcript_text = transcribe_audio_local(audio_path, job_id=job_id)
+        update_job(
+            job_id,
+            transcript=transcript_text,
+            arabic_transcript=transcript_text,
+        )
         update_job_progress(job_id, worked_seconds=70.0, total_work_seconds=100.0)
 
         update_job(job_id, phase="translating")
@@ -390,13 +409,20 @@ def process_job(job_id: str, audio_path: str):
             translation_text = translate_text_openai_with_progress(transcript_text, job_id=job_id)
         else:
             translation_text = translate_text_local(audio_path, transcript_text, job_id=job_id)
+        update_job(
+            job_id,
+            translation=translation_text,
+            english_translation=translation_text,
+        )
         update_job_progress(job_id, worked_seconds=88.0, total_work_seconds=100.0)
 
         update_job(job_id, phase="labeling_speakers")
         try:
             if OPENAI_IMPORT_ERROR is None and bool(os.getenv("OPENAI_API_KEY")):
-                transcript_text = apply_speaker_labels_openai(transcript_text, SOURCE_LANGUAGE)
-                translation_text = apply_speaker_labels_openai(translation_text, TARGET_LANGUAGE)
+                labeled_transcript = apply_speaker_labels_openai(transcript_text, SOURCE_LANGUAGE)
+                labeled_translation = apply_speaker_labels_openai(translation_text, TARGET_LANGUAGE)
+                transcript_text = prefer_original_if_truncated(transcript_text, labeled_transcript)
+                translation_text = prefer_original_if_truncated(translation_text, labeled_translation)
         except Exception:
             # Keep original text if speaker labeling fails.
             pass
