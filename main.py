@@ -383,6 +383,37 @@ def update_job_progress(job_id: str, worked_seconds: float, total_work_seconds: 
         persist_job(job)
 
 
+def format_openai_error(exc: Exception) -> str:
+    status_code = getattr(exc, "status_code", None)
+    body = getattr(exc, "body", None)
+
+    if isinstance(body, dict):
+        error_obj = body.get("error")
+        if isinstance(error_obj, dict):
+            message = error_obj.get("message")
+            code = error_obj.get("code")
+            type_name = error_obj.get("type")
+            if message:
+                details = []
+                if type_name:
+                    details.append(f"type={type_name}")
+                if code:
+                    details.append(f"code={code}")
+                if details:
+                    return f"{message} ({', '.join(details)})"
+                return str(message)
+
+    message = str(exc).strip()
+    if message:
+        if status_code is not None and f"status code: {status_code}" not in message.lower():
+            return f"{message} (status {status_code})"
+        return message
+
+    if status_code is not None:
+        return f"OpenAI API request failed with status {status_code}."
+    return "OpenAI API request failed."
+
+
 def process_job(job_id: str, audio_path: str):
     try:
         provider = get_provider()
@@ -442,12 +473,12 @@ def process_job(job_id: str, audio_path: str):
             arabic_transcript=transcript_text,
             english_translation=translation_text,
         )
-    except RateLimitError:
-        update_job(job_id, status="error", phase="failed", error="OpenAI rate limit reached. Please retry shortly.")
+    except RateLimitError as e:
+        update_job(job_id, status="error", phase="failed", error=format_openai_error(e))
     except APITimeoutError:
         update_job(job_id, status="error", phase="failed", error="OpenAI request timed out. Please retry.")
     except APIError as e:
-        update_job(job_id, status="error", phase="failed", error=f"OpenAI API error: {str(e)}")
+        update_job(job_id, status="error", phase="failed", error=format_openai_error(e))
     except Exception as e:
         update_job(job_id, status="error", phase="failed", error=str(e))
     finally:
